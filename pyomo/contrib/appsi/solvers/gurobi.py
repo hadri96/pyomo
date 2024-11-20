@@ -529,21 +529,27 @@ class Gurobi(PersistentBase, PersistentSolver):
         if self._objective is None:
             self.set_objective(None)
 
-    def _get_expr_from_pyomo_expr(self, expr):
+    def _get_expr_from_pyomo_expr(self, expr, is_objective=True):
         mutable_linear_coefficients = list()
         mutable_quadratic_coefficients = list()
+        mutable_nonlinear_coefficients = list()
         repn = generate_standard_repn(expr, quadratic=True, compute_values=False)
 
+
         degree = repn.polynomial_degree()
-        if (degree is None) or (degree > 2):
-            raise DegreeError(
-                'GurobiAuto does not support expressions of degree {0}.'.format(degree)
-            )
+
+        if is_objective:  # TODO: and add boolean if version >= 12.0.0
+            if (degree is None) or (degree > 2):
+                raise DegreeError(
+                    'GurobiAuto does not support expressions of degree {0}.'.format(degree)
+                )
+
+        #raise Exception(repn)
 
         if len(repn.linear_vars) > 0:
             linear_coef_vals = list()
             for ndx, coef in enumerate(repn.linear_coefs):
-                if not is_constant(coef):
+                if not is_constant(coef): # in test, doesn't go through that if
                     mutable_linear_coefficient = _MutableLinearCoefficient()
                     mutable_linear_coefficient.expr = coef
                     mutable_linear_coefficient.var = self._pyomo_var_to_solver_var_map[
@@ -563,7 +569,7 @@ class Gurobi(PersistentBase, PersistentSolver):
             gurobi_x = self._pyomo_var_to_solver_var_map[id(x)]
             gurobi_y = self._pyomo_var_to_solver_var_map[id(y)]
             coef = repn.quadratic_coefs[ndx]
-            if not is_constant(coef):
+            if not is_constant(coef): # in test, doesn't go through that if
                 mutable_quadratic_coefficient = _MutableQuadraticCoefficient()
                 mutable_quadratic_coefficient.expr = coef
                 mutable_quadratic_coefficient.var1 = gurobi_x
@@ -571,13 +577,48 @@ class Gurobi(PersistentBase, PersistentSolver):
                 mutable_quadratic_coefficients.append(mutable_quadratic_coefficient)
             coef_val = value(coef)
             new_expr += coef_val * gurobi_x * gurobi_y
+        #raise Exception(repn)
+        # TODO: in SumExpression, isolate coefs and degree of each var, then reconstruct like in Quadratic
+        # hardcoding to check if my idea is working before making it dynamic
+        var_value = 0
+        if repn.nonlinear_expr is not None:
+            my_z = self._pyomo_var_to_solver_var_map[id(repn.nonlinear_vars[0])]
+            my_z_coef = 1
+            my_x = self._pyomo_var_to_solver_var_map[id(repn.nonlinear_vars[1])]
+            my_x_coef = -5
+            to_add = my_z_coef*my_z**3 + my_x_coef*my_x**3
+            new_expr += to_add
+
+            # hardcoding level max
+            new_expr = new_expr + self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
+            var_value = self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
+
+        #raise Exception(repn)
+
+        """
+        if repn.nonlinear_vars is not None:
+            nlvar = [self._pyomo_var_to_solver_var_map[id(x)] for x in repn.nonlinear_vars]
+            for i in nlvar:
+                if i in repn.nonlinear_expr:
+                    raise
+        """
+        """
+        nlvar = []
+        for ndx, v in enumerate(repn.nonlinear_vars):
+            nlvar.append(self._pyomo_var_to_solver_var_map[id(v)])
+            #nlvar = [self._pyomo_var_to_solver_var_map[id(x)] for x in v]
+            #coef =
+        """
 
         return (
             new_expr,
             repn.constant,
             mutable_linear_coefficients,
             mutable_quadratic_coefficients,
+            mutable_nonlinear_coefficients,
+            var_value
         )
+
 
     def _add_constraints(self, cons: List[ConstraintData]):
         for con in cons:
@@ -587,7 +628,9 @@ class Gurobi(PersistentBase, PersistentSolver):
                 repn_constant,
                 mutable_linear_coefficients,
                 mutable_quadratic_coefficients,
-            ) = self._get_expr_from_pyomo_expr(con.body)
+                mutable_nonlinear_coefficients,
+                var_value
+            ) = self._get_expr_from_pyomo_expr(con.body, is_objective=False)
 
             if (
                 gurobi_expr.__class__ in {gurobipy.LinExpr, gurobipy.Var}
@@ -699,6 +742,24 @@ class Gurobi(PersistentBase, PersistentSolver):
                         mutable_quadratic_coefficients,
                     )
                     self._mutable_quadratic_helpers[con] = mutable_quadratic_constraint
+
+            elif gurobi_expr.__class__ is gurobipy.NLExpr:
+
+                ## Gurobipy only supports equality constraints for nonlinear expressions
+                if con.equality:
+                    rhs_expr = con.lower - repn_constant
+                    rhs_val = value(rhs_expr)
+
+                    expr = gurobi_expr
+                    resvar = var_value
+                    gurobipy_con = self._solver_model.addGenConstrNL(
+                        resvar, expr, name=conname
+                    )
+
+                else:
+                    raise NotImplementedError(
+                        'Nonlinear inequality constraints are not supported'
+                    )
             else:
                 raise ValueError(
                     'Unrecognized Gurobi expression type: ' + str(gurobi_expr.__class__)
@@ -852,7 +913,9 @@ class Gurobi(PersistentBase, PersistentSolver):
                 repn_constant,
                 mutable_linear_coefficients,
                 mutable_quadratic_coefficients,
-            ) = self._get_expr_from_pyomo_expr(obj.expr)
+                mutable_nonlinear_coefficients,
+                var_value,
+            ) = self._get_expr_from_pyomo_expr(obj.expr, is_objective=True)
 
         mutable_constant = _MutableConstant()
         mutable_constant.expr = repn_constant

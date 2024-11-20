@@ -742,3 +742,35 @@ class TestManualModel(unittest.TestCase):
         opt.update()
         self.assertEqual(opt._solver_model.getAttr('NumVars'), 1)
         opt._only_child_vars = orig_only_child_vars
+
+
+    def test_polynomial_constraint(self):
+            m = pe.ConcreteModel()
+            m.x = pe.Var(bounds=(-5, 5))
+            m.y = pe.Var(bounds=(-5, 5))
+            m.z = pe.Var(bounds=(-5, 5))
+            m.obj = pe.Objective(expr=m.x + m.y + m.z)
+            # Quadratic constraint (to understand what's going on)
+            #m.c1 = pe.Constraint(expr=m.z ** 2 == 5 * m.x ** 2 + 7 * m.x ** 2 + 13 * m.y)
+            m.c1 = pe.Constraint(expr=m.z**3 == 5*m.x**3 + 7*m.x**2 + m.y)
+            # Cubic constraint
+            #m.c2 = pe.Constraint(expr=m.y >= m.x**3)
+            # Mixed degree constraint
+            #m.c3 = pe.Constraint(expr=m.y <= m.x**3 + 2*m.x**2 - 1)
+            # Quadratic constraint (to understand what's going on)
+            #m.c3 = pe.Constraint(expr=m.z >= m.x**2)
+
+            opt = Gurobi()
+            opt.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+            opt.gurobi_options['FuncNonlinear'] = 1
+            res = opt.solve(m)
+
+
+            raise Exception(res)
+            self.assertEqual(res.termination_condition, TerminationCondition.optimal)
+            # Solution should satisfy polynomial constraints
+            self.assertGreaterEqual(m.y.value, m.x.value**3)
+            self.assertLessEqual(
+                m.y.value,
+                m.x.value**3 + 2*m.x.value**2 - 1
+            )
