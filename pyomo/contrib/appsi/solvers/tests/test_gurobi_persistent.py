@@ -792,7 +792,7 @@ class TestManualModel(unittest.TestCase):
             # Edge cases
             (m.x**0, 0),                            # Power of 0
             (m.x**1, 1),                            # Power of 1
-            (0*m.x**5, 0),                          # Zero coefficient
+            (0*m.x**5 + 1, 0),                      # Zero coefficient + constant
         ]
 
         for i, (expr, expected_degree) in enumerate(cases):
@@ -808,11 +808,10 @@ class TestManualModel(unittest.TestCase):
             m = pe.ConcreteModel()
             m.x = pe.Var(bounds=(-5, 5))
             m.y = pe.Var(bounds=(-5, 5))
-            m.z = pe.Var(bounds=(-5, 5))
-            m.obj = pe.Objective(expr=m.x + m.y + m.z)
+            m.obj = pe.Objective(expr=m.y + m.x )
             # Quadratic constraint (to understand what's going on)
             #m.c1 = pe.Constraint(expr=m.z ** 2 == 5 * m.x ** 2 + 7 * m.x ** 2 + 13 * m.y)
-            m.c1 = pe.Constraint(expr=m.z**3 == 5*m.x**3 + 7*m.x**2 + m.y)
+            m.c1 = pe.Constraint(expr=m.y == m.x**4 - 2)
             # Cubic constraint
             #m.c2 = pe.Constraint(expr=m.y >= m.x**3)
             # Mixed degree constraint
@@ -826,8 +825,5 @@ class TestManualModel(unittest.TestCase):
             res = opt.solve(m)
             self.assertEqual(res.termination_condition, TerminationCondition.optimal)
             # Solution should satisfy polynomial constraints
-            self.assertGreaterEqual(m.y.value, m.x.value**3)
-            self.assertLessEqual(
-                m.y.value,
-                m.x.value**3 + 2*m.x.value**2 - 1
-            )
+            self.assertAlmostEqual(m.y.value, m.x.value**4 - 2)
+

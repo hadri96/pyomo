@@ -12,6 +12,7 @@
 from collections.abc import Iterable
 import logging
 import math
+from functools import reduce
 from typing import List, Dict, Optional
 from pyomo.common.collections import ComponentSet, ComponentMap, OrderedSet
 from pyomo.common.log import LogStream
@@ -234,6 +235,50 @@ class _MutableQuadraticCoefficient(object):
         self.var1 = None
         self.var2 = None
 
+class _MutablePolynomialCoefficient(object):
+    def __init__(self):
+        self.expr = None
+        self.vars = None
+
+class _MutablePolynomialConstraint(object):
+    def __init__(
+        self, gurobi_model, gurobi_con, constant, linear_coefs, quadratic_coefs, polynomial_coefs
+    ):
+        self.con = gurobi_con
+        self.gurobi_model = gurobi_model
+        self.constant = constant
+        self.last_constant_value = value(self.constant.expr)
+        self.linear_coefs = linear_coefs
+        self.last_linear_coef_values = [value(i.expr) for i in self.linear_coefs]
+        self.quadratic_coefs = quadratic_coefs
+        self.last_quadratic_coef_values = [value(i.expr) for i in self.quadratic_coefs]
+        self.polynomial_coefs = polynomial_coefs
+        self.last_polynomial_coef_values = [value(i.expr) for i in self.polynomial_coefs]
+
+    def get_updated_expression(self):
+        gurobi_expr = self.gurobi_model.getQCRow(self.con)
+        for ndx, coef in enumerate(self.linear_coefs):
+            current_coef_value = value(coef.expr)
+            incremental_coef_value = (
+                current_coef_value - self.last_linear_coef_values[ndx]
+            )
+            gurobi_expr += incremental_coef_value * coef.var
+            self.last_linear_coef_values[ndx] = current_coef_value
+        for ndx, coef in enumerate(self.quadratic_coefs):
+            current_coef_value = value(coef.expr)
+            incremental_coef_value = (
+                current_coef_value - self.last_quadratic_coef_values[ndx]
+            )
+            gurobi_expr += incremental_coef_value * coef.var1 * coef.var2
+            self.last_quadratic_coef_values[ndx] = current_coef_value
+        for ndx, coef in enumerate(self.polynomial_coefs):
+            current_coef_value = value(coef.expr)
+            incremental_coef_value = (
+                current_coef_value - self.last_polynomial_coef_values[ndx]
+            )
+            gurobi_expr += incremental_coef_value * coef.vars[0] * coef.vars[1]
+            self.last_polynomial_coef_values[ndx] = current_coef_value
+        return gurobi_expr
 
 class Gurobi(PersistentBase, PersistentSolver):
     """
@@ -533,18 +578,21 @@ class Gurobi(PersistentBase, PersistentSolver):
         mutable_linear_coefficients = list()
         mutable_quadratic_coefficients = list()
         mutable_polynomial_coefficients = list()
-        repn = generate_polynomial_repn(expr, compute_values=False)
 
+        repn = generate_polynomial_repn(expr, compute_values=False)
 
         degree = repn.polynomial_degree()
 
-        if is_objective:  # TODO: and add boolean if version >= 12.0.0
-            if (degree is None) or (degree > 2):
+        if not is_objective:
+            if degree is None:
                 raise DegreeError(
-                    'GurobiAuto does not support expressions of degree {0}.'.format(degree)
+                    f'Pyomo does not support expressions of degree {degree} with Gurobi'
                 )
-
-        #raise Exception(repn)
+            elif degree > 2 and gurobipy.GRB.VERSION_MAJOR < 12:
+                raise DegreeError(
+                    f'Gurobi {gurobipy.GRB.VERSION_MAJOR}.{gurobipy.GRB.VERSION_MINOR}.{gurobipy.GRB.VERSION_TECHNICAL} does not support '
+                    f'nonlinear expressions of degree {degree}. Please upgrade to Gurobi 12.0.0 or later.'
+                )
 
         if len(repn.linear_vars) > 0:
             linear_coef_vals = list()
@@ -563,7 +611,12 @@ class Gurobi(PersistentBase, PersistentSolver):
             )
         else:
             new_expr = 0.0
-
+            if repn.polynomial_degree() > 2:
+                raise DegreeError(
+                    f'Gurobi requires at least one linear term in the constraint. '
+                    f'Please add a linear term to the objective function. '
+                    f'We recommend using a new variable to represent the exponent of one of the variables.'
+                )
         for ndx, v in enumerate(repn.quadratic_vars):
             x, y = v
             gurobi_x = self._pyomo_var_to_solver_var_map[id(x)]
@@ -577,39 +630,22 @@ class Gurobi(PersistentBase, PersistentSolver):
                 mutable_quadratic_coefficients.append(mutable_quadratic_coefficient)
             coef_val = value(coef)
             new_expr += coef_val * gurobi_x * gurobi_y
-        #raise Exception(repn)
-        # TODO: in SumExpression, isolate coefs and degree of each var, then reconstruct like in Quadratic
-        # hardcoding to check if my idea is working before making it dynamic
+        for ndx, v in enumerate(repn.polynomial_vars):
+            gurobi_vars = [self._pyomo_var_to_solver_var_map[id(i)] for i in v]
+            coef = repn.polynomial_coefs[ndx]
+            if not is_constant(coef):
+                mutable_polynomial_coefficient = _MutablePolynomialCoefficient()
+                mutable_polynomial_coefficient.expr = coef
+                mutable_polynomial_coefficient.vars = gurobi_vars
+                mutable_polynomial_coefficients.append(mutable_polynomial_coefficient)
+            coef_val = value(coef)
+            new_expr += coef_val * reduce(lambda x, y: x * y, gurobi_vars)
         var_value = 0
-        if repn.nonlinear_expr is not None:
-            my_z = self._pyomo_var_to_solver_var_map[id(repn.nonlinear_vars[0])]
-            my_z_coef = 1
-            my_x = self._pyomo_var_to_solver_var_map[id(repn.nonlinear_vars[1])]
-            my_x_coef = -5
-            to_add = my_z_coef*my_z**3 + my_x_coef*my_x**3
-            new_expr += to_add
-
-            # hardcoding level max
-            new_expr = new_expr + self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
+        if repn.polynomial_degree() > 2:
+            coef = repn.linear_coefs[0]
+            new_expr -= coef * self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
+            new_expr /= -coef
             var_value = self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
-
-        #raise Exception(repn)
-
-        """
-        if repn.nonlinear_vars is not None:
-            nlvar = [self._pyomo_var_to_solver_var_map[id(x)] for x in repn.nonlinear_vars]
-            for i in nlvar:
-                if i in repn.nonlinear_expr:
-                    raise
-        """
-        """
-        nlvar = []
-        for ndx, v in enumerate(repn.nonlinear_vars):
-            nlvar.append(self._pyomo_var_to_solver_var_map[id(v)])
-            #nlvar = [self._pyomo_var_to_solver_var_map[id(x)] for x in v]
-            #coef =
-        """
-
         return (
             new_expr,
             repn.constant,
@@ -628,7 +664,7 @@ class Gurobi(PersistentBase, PersistentSolver):
                 repn_constant,
                 mutable_linear_coefficients,
                 mutable_quadratic_coefficients,
-                mutable_nonlinear_coefficients,
+                mutable_polynomial_coefficients,
                 var_value
             ) = self._get_expr_from_pyomo_expr(con.body, is_objective=False)
 
@@ -747,15 +783,9 @@ class Gurobi(PersistentBase, PersistentSolver):
 
                 ## Gurobipy only supports equality constraints for nonlinear expressions
                 if con.equality:
-                    rhs_expr = con.lower - repn_constant
-                    rhs_val = value(rhs_expr)
-
-                    expr = gurobi_expr
-                    resvar = var_value
                     gurobipy_con = self._solver_model.addGenConstrNL(
-                        resvar, expr, name=conname
+                        var_value, gurobi_expr, name=conname
                     )
-
                 else:
                     raise NotImplementedError(
                         'Nonlinear inequality constraints are not supported'
