@@ -28,7 +28,7 @@ from pyomo.core.base.constraint import ConstraintData
 from pyomo.core.base.sos import SOSConstraintData
 from pyomo.core.base.param import ParamData
 from pyomo.core.expr.numvalue import value, is_constant, is_fixed, native_numeric_types
-from pyomo.repn import generate_standard_repn
+from pyomo.contrib.appsi.solvers.polynomial_repn import generate_polynomial_repn
 from pyomo.core.expr.numeric_expr import NPV_MaxExpression, NPV_MinExpression
 from pyomo.contrib.appsi.base import (
     PersistentSolver,
@@ -532,8 +532,8 @@ class Gurobi(PersistentBase, PersistentSolver):
     def _get_expr_from_pyomo_expr(self, expr, is_objective=True):
         mutable_linear_coefficients = list()
         mutable_quadratic_coefficients = list()
-        mutable_nonlinear_coefficients = list()
-        repn = generate_standard_repn(expr, quadratic=True, compute_values=False)
+        mutable_polynomial_coefficients = list()
+        repn = generate_polynomial_repn(expr, compute_values=False)
 
 
         degree = repn.polynomial_degree()
@@ -615,7 +615,7 @@ class Gurobi(PersistentBase, PersistentSolver):
             repn.constant,
             mutable_linear_coefficients,
             mutable_quadratic_coefficients,
-            mutable_nonlinear_coefficients,
+            mutable_polynomial_coefficients,
             var_value
         )
 

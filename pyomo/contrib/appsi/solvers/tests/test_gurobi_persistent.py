@@ -17,7 +17,7 @@ from pyomo.contrib.appsi.base import TerminationCondition
 from pyomo.core.expr.numeric_expr import LinearExpression
 from pyomo.core.expr.taylor_series import taylor_series_expansion
 from pyomo.contrib.appsi.cmodel import cmodel_available
-
+from pyomo.contrib.appsi.solvers.polynomial_repn import generate_polynomial_repn
 
 opt = Gurobi()
 if not opt.available():
@@ -744,6 +744,66 @@ class TestManualModel(unittest.TestCase):
         opt._only_child_vars = orig_only_child_vars
 
 
+    def test_polynomial_degree(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var()
+        m.y = pe.Var()
+        m.z = pe.Var()
+
+        # Test cases
+        cases = [
+            # Basic cases
+            (m.x + m.y, 1),                         # Linear
+            (m.x**2 + m.y, 2),                      # Quadratic
+            (0.5, 0),                               # Constant
+
+            # Quadratic combinations
+            (m.x * m.y, 2),                         # Mixed quadratic
+            (m.x**2 + m.y**2, 2),                   # Pure quadratic
+            ((m.x + m.y)**2, 2),                    # Expanded quadratic
+
+            # Higher degree polynomials
+            (m.x**3, 3),                            # Cubic
+            (m.x**4, 4),                            # Quartic
+            (m.x**5, 5),                            # Quintic
+
+            # Mixed degree polynomials
+            (m.x**3 + m.x**2 + m.x + 1, 3),        # Mixed degrees up to cubic
+            (m.x**4 + m.x**2 + m.y, 4),            # Mixed degrees up to quartic
+
+            # Products of different degrees
+            (m.x**2 * m.y, 3),                      # Quadratic * linear
+            (m.x**2 * m.y**2, 4),                   # Quadratic * quadratic
+            (m.x**3 * m.y**2, 5),                   # Cubic * quadratic
+
+            # Multiple variable interactions
+            (m.x**2 * m.y * m.z, 4),               # Three variable interaction
+            (m.x**2 * m.y**2 * m.z, 5),            # Mixed powers with three variables
+
+            # Mixed with constants
+            (2*m.x**3 + 3*m.x**2 + 4*m.x + 5, 3),  # Polynomial with coefficients
+            (0.5*m.x**4 + 2*m.x**2 * m.y**2, 4),   # Mixed terms with coefficients
+
+            # Non-polynomial cases
+            (pe.sin(m.x), None),                    # Trigonometric
+            (pe.exp(m.x), None),                    # Exponential
+            (m.x**3 + pe.sin(m.x), None),          # Mixed polynomial and non-polynomial
+
+            # Edge cases
+            (m.x**0, 0),                            # Power of 0
+            (m.x**1, 1),                            # Power of 1
+            (0*m.x**5, 0),                          # Zero coefficient
+        ]
+
+        for i, (expr, expected_degree) in enumerate(cases):
+            repn = generate_polynomial_repn(expr)
+            self.assertEqual(
+                repn.polynomial_degree(),
+                expected_degree,
+                f"Failed test n° {i} for expression {expr}: expected {expected_degree}, "
+                f"got {repn.polynomial_degree()}"
+            )
+
     def test_polynomial_constraint(self):
             m = pe.ConcreteModel()
             m.x = pe.Var(bounds=(-5, 5))
@@ -764,9 +824,6 @@ class TestManualModel(unittest.TestCase):
             opt.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
             opt.gurobi_options['FuncNonlinear'] = 1
             res = opt.solve(m)
-
-
-            raise Exception(res)
             self.assertEqual(res.termination_condition, TerminationCondition.optimal)
             # Solution should satisfy polynomial constraints
             self.assertGreaterEqual(m.y.value, m.x.value**3)
