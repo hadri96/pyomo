@@ -12,7 +12,7 @@
 from pyomo.common.errors import PyomoException
 import pyomo.common.unittest as unittest
 import pyomo.environ as pe
-from pyomo.contrib.appsi.solvers.gurobi import Gurobi
+from pyomo.contrib.appsi.solvers.gurobi import Gurobi, DegreeError
 from pyomo.contrib.appsi.base import TerminationCondition
 from pyomo.core.expr.numeric_expr import LinearExpression
 from pyomo.core.expr.taylor_series import taylor_series_expansion
@@ -743,7 +743,7 @@ class TestManualModel(unittest.TestCase):
         self.assertEqual(opt._solver_model.getAttr('NumVars'), 1)
         opt._only_child_vars = orig_only_child_vars
 
-
+class TestPolynomialModel(unittest.TestCase):
     def test_polynomial_degree(self):
         m = pe.ConcreteModel()
         m.x = pe.Var()
@@ -768,7 +768,7 @@ class TestManualModel(unittest.TestCase):
             (m.x**5, 5),                            # Quintic
 
             # Mixed degree polynomials
-            (m.x**3 + m.x**2 + m.x + 1, 3),        # Mixed degrees up to cubic
+            (-(m.x**3 + m.x**2) + m.x + 1, 3),        # Mixed degrees up to cubic
             (m.x**4 + m.x**2 + m.y, 4),            # Mixed degrees up to quartic
 
             # Products of different degrees
@@ -804,26 +804,141 @@ class TestManualModel(unittest.TestCase):
                 f"got {repn.polynomial_degree()}"
             )
 
-    def test_polynomial_constraint(self):
-            m = pe.ConcreteModel()
-            m.x = pe.Var(bounds=(-5, 5))
-            m.y = pe.Var(bounds=(-5, 5))
-            m.obj = pe.Objective(expr=m.y + m.x )
-            # Quadratic constraint (to understand what's going on)
-            #m.c1 = pe.Constraint(expr=m.z ** 2 == 5 * m.x ** 2 + 7 * m.x ** 2 + 13 * m.y)
-            m.c1 = pe.Constraint(expr=m.y == m.x**4 - 2)
-            # Cubic constraint
-            #m.c2 = pe.Constraint(expr=m.y >= m.x**3)
-            # Mixed degree constraint
-            #m.c3 = pe.Constraint(expr=m.y <= m.x**3 + 2*m.x**2 - 1)
-            # Quadratic constraint (to understand what's going on)
-            #m.c3 = pe.Constraint(expr=m.z >= m.x**2)
+    def test_polynomial_constraint_1(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y + 1 == m.x ** 4 - 1)  # check if constraints are still aggregated
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+        res = opti.solve(m)
 
-            opt = Gurobi()
-            opt.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
-            opt.gurobi_options['FuncNonlinear'] = 1
-            res = opt.solve(m)
-            self.assertEqual(res.termination_condition, TerminationCondition.optimal)
-            # Solution should satisfy polynomial constraints
-            self.assertAlmostEqual(m.y.value, m.x.value**4 - 2)
+        self.assertEqual(res.termination_condition, TerminationCondition.optimal)
 
+        # Solution should satisfy polynomial constraints
+        lhs = m.y.value + 1
+        rhs = m.x.value ** 4 - 1
+        self.assertAlmostEqual(
+            lhs,
+            rhs,
+            places=5,
+            msg=f'Failed test for constraint m.c1: lhs = {lhs}, rhs = {rhs}.'
+        )
+
+    def test_polynomial_constraint_2(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y == m.x ** 4 - 2)
+
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+        res = opti.solve(m)
+
+        self.assertEqual(res.termination_condition, TerminationCondition.optimal)
+
+        # Solution should satisfy polynomial constraints
+        lhs = m.y.value
+        rhs = m.x.value ** 4 - 2
+        self.assertAlmostEqual(
+            lhs,
+            rhs,
+            places=5,
+            msg=f'Failed test for constraint m.c1: lhs = {lhs}, rhs = {rhs}.'
+        )
+
+    def test_polynomial_constraint_3(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y + 1 == m.x ** 4 - 1)
+        m.c2 = pe.Constraint(expr=m.y >= m.x ** 3)  # should raise NotImplementedError
+
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+
+        with self.assertRaises(NotImplementedError):
+            opti.solve(m)
+
+    def test_polynomial_constraint_4(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y <= m.x ** 3 + 2 * m.x ** 2 - 1)  # should raise NotImplementedError
+
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+
+        with self.assertRaises(NotImplementedError):
+            opti.solve(m)
+
+    def test_polynomial_constraint_5(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y >= m.y ** 2),  # shouldn't raise any error
+        m.c2 = pe.Constraint(expr=m.y == - m.x ** 2 + 1)  # shouldn't raise any error
+
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+        res = opti.solve(m)
+
+        self.assertEqual(res.termination_condition, TerminationCondition.optimal)
+
+        # Solution should satisfy polynomial constraints
+        lhs = m.y.value
+        rhs = - m.x.value**2 + 1
+        self.assertAlmostEqual(
+            lhs,
+            rhs,
+            places=5,
+            msg=f'Failed test for constraint m.c1: lhs = {lhs}, rhs = {rhs}.'
+        )
+
+    def test_polynomial_constraint_6(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y + 1 == m.x ** 4 * m.y ** 3 - 1)
+
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+        res = opti.solve(m)
+
+        self.assertEqual(res.termination_condition, TerminationCondition.optimal)
+
+        # Solution should satisfy polynomial constraints
+        lhs = m.y.value + 1
+        rhs = m.x.value ** 4 * m.y.value ** 3 - 1
+        self.assertAlmostEqual(
+            lhs,
+            rhs,
+            places=5,
+            msg=f'Failed test for constraint m.c1: lhs = {lhs}, rhs = {rhs}.'
+        )
+
+    def test_polynomial_constraint_7(self):
+        m = pe.ConcreteModel()
+        m.x = pe.Var(bounds=(-5, 5))
+        m.y = pe.Var(bounds=(-5, 5))
+        m.obj = pe.Objective(expr=m.y + m.x)
+        m.c1 = pe.Constraint(expr=m.y**2 + 1 == m.x ** 4 * m.y ** 3 - 1)
+
+        opti = Gurobi()
+        opti.gurobi_options['nonconvex'] = 2  # Enable non-convex optimization
+        opti.gurobi_options['FuncNonlinear'] = 1
+
+        with self.assertRaises(DegreeError):
+            opti.solve(m)

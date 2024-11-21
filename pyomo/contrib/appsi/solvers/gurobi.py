@@ -575,14 +575,27 @@ class Gurobi(PersistentBase, PersistentSolver):
             self.set_objective(None)
 
     def _get_expr_from_pyomo_expr(self, expr, is_objective=True):
+        """
+            Nonlinear constraints in gurobi 12 must be of the form y = nonlinear function,
+            with y a strictly linear variable.
+
+            We leave the user free to write their constraint as they wish, and we parse it to
+            obtain y = f(x,y,z,...).
+
+            Since we've only generalised the representation of polynomials,
+            here nonlinear means polynomial.
+
+            Thus we need to remove y from new_expr, and divide by its coefficient.
+            We would have liked to just avoid parsing it when we parse all the linear vars,
+            but it happens to make things even more complicated.
+        """
+
         mutable_linear_coefficients = list()
         mutable_quadratic_coefficients = list()
         mutable_polynomial_coefficients = list()
-
         repn = generate_polynomial_repn(expr, compute_values=False)
 
         degree = repn.polynomial_degree()
-
         if not is_objective:
             if degree is None:
                 raise DegreeError(
@@ -597,7 +610,7 @@ class Gurobi(PersistentBase, PersistentSolver):
         if len(repn.linear_vars) > 0:
             linear_coef_vals = list()
             for ndx, coef in enumerate(repn.linear_coefs):
-                if not is_constant(coef): # in test, doesn't go through that if
+                if not is_constant(coef):
                     mutable_linear_coefficient = _MutableLinearCoefficient()
                     mutable_linear_coefficient.expr = coef
                     mutable_linear_coefficient.var = self._pyomo_var_to_solver_var_map[
@@ -611,12 +624,15 @@ class Gurobi(PersistentBase, PersistentSolver):
             )
         else:
             new_expr = 0.0
+
+            # if there is no linear variable and there is a polynomial component, then raise an error
             if repn.polynomial_degree() > 2:
                 raise DegreeError(
                     f'Gurobi requires at least one linear term in the constraint. '
                     f'Please add a linear term to the objective function. '
                     f'We recommend using a new variable to represent the exponent of one of the variables.'
                 )
+
         for ndx, v in enumerate(repn.quadratic_vars):
             x, y = v
             gurobi_x = self._pyomo_var_to_solver_var_map[id(x)]
@@ -630,6 +646,8 @@ class Gurobi(PersistentBase, PersistentSolver):
                 mutable_quadratic_coefficients.append(mutable_quadratic_coefficient)
             coef_val = value(coef)
             new_expr += coef_val * gurobi_x * gurobi_y
+
+
         for ndx, v in enumerate(repn.polynomial_vars):
             gurobi_vars = [self._pyomo_var_to_solver_var_map[id(i)] for i in v]
             coef = repn.polynomial_coefs[ndx]
@@ -641,11 +659,15 @@ class Gurobi(PersistentBase, PersistentSolver):
             coef_val = value(coef)
             new_expr += coef_val * reduce(lambda x, y: x * y, gurobi_vars)
         var_value = 0
+
         if repn.polynomial_degree() > 2:
             coef = repn.linear_coefs[0]
             new_expr -= coef * self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
+            # we have to add the constant here because it must also be divided by the coef of the linear term
+            new_expr += repn.constant
             new_expr /= -coef
             var_value = self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
+
         return (
             new_expr,
             repn.constant,
@@ -780,7 +802,6 @@ class Gurobi(PersistentBase, PersistentSolver):
                     self._mutable_quadratic_helpers[con] = mutable_quadratic_constraint
 
             elif gurobi_expr.__class__ is gurobipy.NLExpr:
-
                 ## Gurobipy only supports equality constraints for nonlinear expressions
                 if con.equality:
                     gurobipy_con = self._solver_model.addGenConstrNL(
@@ -943,7 +964,7 @@ class Gurobi(PersistentBase, PersistentSolver):
                 repn_constant,
                 mutable_linear_coefficients,
                 mutable_quadratic_coefficients,
-                mutable_nonlinear_coefficients,
+                mutable_polynomial_coefficients,
                 var_value,
             ) = self._get_expr_from_pyomo_expr(obj.expr, is_objective=True)
 

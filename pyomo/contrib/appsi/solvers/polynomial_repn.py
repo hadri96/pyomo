@@ -132,8 +132,9 @@ class PolynomialRepn(StandardRepn):
 
         return degree
 
+
 def _collect_polynomial_repn(exp, multiplier, idMap, compute_values, verbose, quadratic):
-    """Similar to _collect_prod but handles polynomial terms"""
+    # Similar to _collect_prod but handles polynomial terms
     results = ResultsWithPolynomials()
 
     if isinstance(exp, EXPR.PowExpression):
@@ -149,6 +150,7 @@ def _collect_polynomial_repn(exp, multiplier, idMap, compute_values, verbose, qu
 
     # If not a polynomial term, use standard collection
     return generate_standard_repn(exp, multiplier, idMap, compute_values, verbose, quadratic=True)
+
 
 def generate_polynomial_repn(
     expr, idMap=None, compute_values=True, verbose=False, quadratic=True, repn=None
@@ -191,9 +193,11 @@ def generate_polynomial_repn(
             repn.linear_coefs = (1,)
             repn.linear_vars = (expr,)
             return repn
+
         #
         # The expression is linear
         #
+
         elif expr.__class__ is EXPR.LinearExpression:
             linear_coefs = {}
             linear_vars = {}
@@ -440,7 +444,7 @@ def _collect_pow_poly(exp, multiplier, idMap, compute_values, verbose, quadratic
 
 _repn_collectors[EXPR.PowExpression] = _collect_pow_poly
 
-def _collect_sum_polynomial_repn(exp, multiplier, idMap, compute_values, verbose, quadratic):
+def _collect_sum_poly(exp, multiplier, idMap, compute_values, verbose, quadratic):
     ans = ResultsWithPolynomials()
     nonl = []
     varkeys = idMap[None]
@@ -530,6 +534,8 @@ def _collect_sum_polynomial_repn(exp, multiplier, idMap, compute_values, verbose
         ans.linear.pop(k)
     return ans
 
+_repn_collectors[EXPR.SumExpression] = _collect_sum_poly
+
 def _generate_polynomial_repn(
     expr, idMap=None, compute_values=True, verbose=False, quadratic=True, repn=None
 ):
@@ -538,7 +544,7 @@ def _generate_polynomial_repn(
         # This is the common case, so start collecting the sum
         #
 
-        ans = _collect_sum_polynomial_repn(expr, 1, idMap, compute_values, verbose, quadratic)
+        ans = _collect_sum_poly(expr, 1, idMap, compute_values, verbose, quadratic)
     else:
         #
         # Call generic recursive logic
