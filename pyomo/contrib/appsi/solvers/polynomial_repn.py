@@ -6,6 +6,7 @@ from pyomo.core.expr import current as EXPR
 from pyomo.core.expr.numvalue import value
 import itertools
 from io import StringIO
+import math
 
 class ResultsWithPolynomials(ResultsWithQuadratics):
     __slot__ = ResultsWithQuadratics.__slot__ + ('polynomial',)
@@ -132,7 +133,8 @@ class PolynomialRepn(StandardRepn):
 
         return degree
 
-
+"""
+# This shouldn't be useful
 def _collect_polynomial_repn(exp, multiplier, idMap, compute_values, verbose, quadratic):
     # Similar to _collect_prod but handles polynomial terms
     results = ResultsWithPolynomials()
@@ -150,11 +152,19 @@ def _collect_polynomial_repn(exp, multiplier, idMap, compute_values, verbose, qu
 
     # If not a polynomial term, use standard collection
     return generate_standard_repn(exp, multiplier, idMap, compute_values, verbose, quadratic=True)
-
+"""
 
 def generate_polynomial_repn(
     expr, idMap=None, compute_values=True, verbose=False, quadratic=True, repn=None
 ):
+    """
+        This function is mainly a copy_paste of generate_standard_repn.
+        differences is the return fonction:
+            - it is now _generate_polynomial_repn instead of _generate_standard_repn
+            - Results is now a ResultsWithPolynomials
+            - repn is now of a PolynomialRepn
+    """
+
     #
     # Use a custom Results object
     #
@@ -294,6 +304,13 @@ def generate_polynomial_repn(
         )
 
 def _collect_pow_poly(exp, multiplier, idMap, compute_values, verbose, quadratic):
+    """
+        In this function we created a new behaviour when exponent > 2.
+        We know that this doesn't cover the case (x+y)**3 and we think it might
+        be related to our lack of use of collect_standard_repn after the
+        elif len(res.linear) == 1:
+    """
+
     #
     # Exponent is a numeric value
     #
@@ -441,10 +458,18 @@ def _collect_pow_poly(exp, multiplier, idMap, compute_values, verbose, quadratic
             #
             else:
                 return Results(nonl=multiplier * exp)
-
+# switching the value of _repn_collectors[EXPR.PowExpression] from _collect_pow to _collect_pow_poly
 _repn_collectors[EXPR.PowExpression] = _collect_pow_poly
 
 def _collect_sum_poly(exp, multiplier, idMap, compute_values, verbose, quadratic):
+    """
+        here we just added this bit of code, which adds polynomial parts to
+
+        if isinstance(res_, ResultsWithPolynomials):
+            for i in res_.polynomial:
+                ans.polynomial[i] = ans.polynomial.get(i, 0) + res_.polynomial[i]
+    """
+
     ans = ResultsWithPolynomials()
     nonl = []
     varkeys = idMap[None]
@@ -533,12 +558,17 @@ def _collect_sum_poly(exp, multiplier, idMap, compute_values, verbose, quadratic
     for k in zero_coef:
         ans.linear.pop(k)
     return ans
-
+# switching the value of _repn_collectors[EXPR.SumExpression] from _collect_sum to _collect_sum_poly
 _repn_collectors[EXPR.SumExpression] = _collect_sum_poly
 
 def _generate_polynomial_repn(
     expr, idMap=None, compute_values=True, verbose=False, quadratic=True, repn=None
 ):
+    """
+    This code is mostly a copy/paste from _generate_standard_repn.
+    We only added a loop to Handle polynomial terms,
+    and changed the assignment of ans in its definition.
+    """
     if expr.__class__ is EXPR.SumExpression:
         #
         # This is the common case, so start collecting the sum
@@ -635,6 +665,11 @@ def _generate_polynomial_repn(
     return repn
 
 def _collect_prod_poly(exp, multiplier, idMap, compute_values, verbose, quadratic):
+    """
+        This function extends the existing one and adds behaviour for
+        linear * poly, poly * linear, quad * poly, poly * quad, poly * poly.
+    """
+
     #
     # LHS is a numeric value
     #
@@ -877,10 +912,8 @@ def _collect_prod_poly(exp, multiplier, idMap, compute_values, verbose, quadrati
             for rkey, rcoef in rhs.polynomial.items():
                 ans.polynomial[lkey + rkey] = ans.polynomial.get(lkey + rkey, 0) + multiplier * lcoef * rcoef
     return ans
-
+# switching the value of _repn_collectors[EXPR.ProductExpression] from _collect_prod to _collect_prod_poly
 _repn_collectors[EXPR.ProductExpression] = _collect_prod_poly
-
-import math
 
 def _nCr(n, r):
     return math.comb(n, r)
