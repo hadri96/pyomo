@@ -582,12 +582,12 @@ class Gurobi(PersistentBase, PersistentSolver):
             We leave the user free to write their constraint as they wish, and we parse it to
             obtain y = f(x,y,z,...).
 
-            Since we've only generalised the representation of polynomials,
-            here nonlinear means polynomial.
-
             Thus we need to remove y from new_expr, and divide by its coefficient.
             We would have liked to just avoid parsing it when we parse all the linear vars,
             but it happens to make things even more complicated.
+
+            Since we've only generalised the representation of polynomials,
+            here nonlinear means polynomial.
         """
 
         mutable_linear_coefficients = list()
@@ -647,7 +647,7 @@ class Gurobi(PersistentBase, PersistentSolver):
             coef_val = value(coef)
             new_expr += coef_val * gurobi_x * gurobi_y
 
-
+        # parse polynomial elements
         for ndx, v in enumerate(repn.polynomial_vars):
             gurobi_vars = [self._pyomo_var_to_solver_var_map[id(i)] for i in v]
             coef = repn.polynomial_coefs[ndx]
@@ -660,6 +660,8 @@ class Gurobi(PersistentBase, PersistentSolver):
             new_expr += coef_val * reduce(lambda x, y: x * y, gurobi_vars)
         var_value = 0
 
+        # reparsing to obtain the form y = function
+        # i.e. var_value = new_expr
         if repn.polynomial_degree() > 2:
             coef = repn.linear_coefs[0]
             new_expr -= coef * self._pyomo_var_to_solver_var_map[id(repn.linear_vars[0])]
@@ -679,6 +681,9 @@ class Gurobi(PersistentBase, PersistentSolver):
 
 
     def _add_constraints(self, cons: List[ConstraintData]):
+        """
+            added the gurobipy.LNExpr behaviour (gurobi only implemented equality)
+        """
         for con in cons:
             conname = self._symbol_map.getSymbol(con, self._labeler)
             (
@@ -689,6 +694,7 @@ class Gurobi(PersistentBase, PersistentSolver):
                 mutable_polynomial_coefficients,
                 var_value
             ) = self._get_expr_from_pyomo_expr(con.body, is_objective=False)
+            # this function now needs one more parameter and returns 2 more values
 
             if (
                 gurobi_expr.__class__ in {gurobipy.LinExpr, gurobipy.Var}
